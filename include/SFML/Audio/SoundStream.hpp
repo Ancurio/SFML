@@ -34,6 +34,7 @@
 #include <SFML/System/Time.hpp>
 #include <cstdlib>
 
+#include <rubberband/RubberBandStretcher.h>
 
 namespace sf
 {
@@ -175,6 +176,9 @@ public :
     ////////////////////////////////////////////////////////////
     bool getLoop() const;
 
+	void setPitch(float pitch);
+	float getPitch() const;
+
 protected :
 
     ////////////////////////////////////////////////////////////
@@ -290,6 +294,12 @@ private :
     bool          m_loop;                    ///< Loop flag (true to loop, false to play once)
     Uint64        m_samplesProcessed;        ///< Number of buffers processed since beginning of the stream
     bool          m_endBuffers[BufferCount]; ///< Each buffer is marked as "end buffer" or not, for proper duration calculation
+
+	RubberBand::RubberBandStretcher* m_stretcher;
+	float                            m_pitch;
+	float*                           m_stretchFloatBuffer;
+	Int16*                           m_stretchIntBuffer;
+	std::size_t                      m_stretchBufferSize;
 };
 
 } // namespace sf

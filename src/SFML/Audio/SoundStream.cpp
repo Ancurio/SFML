@@ -40,13 +40,17 @@ namespace sf
 {
 ////////////////////////////////////////////////////////////
 SoundStream::SoundStream() :
-m_thread          (&SoundStream::streamData, this),
-m_isStreaming     (false),
-m_channelCount    (0),
-m_sampleRate      (0),
-m_format          (0),
-m_loop            (false),
-m_samplesProcessed(0)
+m_thread            (&SoundStream::streamData, this),
+m_isStreaming       (false),
+m_channelCount      (0),
+m_sampleRate        (0),
+m_format            (0),
+m_loop              (false),
+m_samplesProcessed  (0),
+m_stretcher         (0),
+m_stretchFloatBuffer(0),
+m_stretchIntBuffer  (0),
+m_stretchBufferSize (0)
 {
 
 }
@@ -75,7 +79,11 @@ void SoundStream::initialize(unsigned int channelCount, unsigned int sampleRate)
         m_channelCount = 0;
         m_sampleRate   = 0;
         err() << "Unsupported number of channels (" << m_channelCount << ")" << std::endl;
+		return;
     }
+
+	m_stretcher = new RubberBand::RubberBandStretcher(sampleRate, channelCount);
+	m_stretcher->setPitchScale(m_pitch);
 }
 
 
@@ -290,10 +298,13 @@ void SoundStream::streamData()
 bool SoundStream::fillAndPushBuffer(unsigned int bufferNum)
 {
     bool requestStop = false;
+	bool final;
 
     // Acquire audio data
     Chunk data = {NULL, 0};
-    if (!onGetData(data))
+	final = onGetData(data);
+
+    if (!final)
     {
         // Mark the buffer as the last one (so that we know when to reset the playing position)
         m_endBuffers[bufferNum] = true;
@@ -316,6 +327,39 @@ bool SoundStream::fillAndPushBuffer(unsigned int bufferNum)
             requestStop = true;
         }
     }
+
+	// Need stretching if pitch isn't normal
+	if (m_pitch != 1.0 && data.samples && data.sampleCount)
+	{
+		// Allocate bigger buffers if too small
+		if (data.sampleCount > m_stretchBufferSize)
+		{
+			delete m_stretchFloatBuffer;
+			delete m_stretchIntBuffer;
+
+			m_stretchFloatBuffer = new float[data.sampleCount];
+			m_stretchIntBuffer = new Int16[data.sampleCount];
+
+			m_stretchBufferSize = data.sampleCount;
+		}
+
+		// Convert int16 -> float
+		for (int i = 0; i < data.sampleCount; i++)
+			m_stretchFloatBuffer[i] = data.samples[i];
+
+		float **buffer = &m_stretchFloatBuffer;
+
+		// Stretch samples
+		m_stretcher->process(buffer, m_stretchBufferSize, final);
+		m_stretcher->retrieve(buffer, m_stretchBufferSize);
+
+		// Convert float -> int16
+		for (int i = 0; i < data.sampleCount; i++)
+			m_stretchIntBuffer[i] = (*buffer)[i];
+
+		// Set new sample data
+		data.samples = m_stretchIntBuffer;
+	}
 
     // Fill the buffer if some data was returned
     if (data.samples && data.sampleCount)
@@ -360,6 +404,24 @@ void SoundStream::clearQueue()
     ALuint buffer;
     for (ALint i = 0; i < nbQueued; ++i)
         alCheck(alSourceUnqueueBuffers(m_source, 1, &buffer));
+
+	m_stretcher->reset();
+	delete m_stretchFloatBuffer;
+	delete m_stretchIntBuffer;
+	m_stretchBufferSize = 0;
+}
+
+////////////////////////////////////////////////////////////
+void SoundStream::setPitch(float pitch)
+{
+	m_pitch = pitch;
+	m_stretcher->setPitchScale(pitch);
+}
+
+////////////////////////////////////////////////////////////
+float SoundStream::getPitch() const
+{
+	return m_pitch;
 }
 
 } // namespace sf
