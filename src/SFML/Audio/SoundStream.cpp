@@ -36,21 +36,26 @@
 #endif
 
 
+static RubberBand::RubberBandStretcher::Options stretcherOptions =
+        RubberBand::RubberBandStretcher::OptionProcessRealTime;
+
+
 namespace sf
 {
 ////////////////////////////////////////////////////////////
 SoundStream::SoundStream() :
-m_thread            (&SoundStream::streamData, this),
-m_isStreaming       (false),
-m_channelCount      (0),
-m_sampleRate        (0),
-m_format            (0),
-m_loop              (false),
-m_samplesProcessed  (0),
-m_stretcher         (0),
-m_stretchFloatBuffer(0),
-m_stretchIntBuffer  (0),
-m_stretchBufferSize (0)
+m_thread          (&SoundStream::streamData, this),
+m_isStreaming     (false),
+m_channelCount    (0),
+m_sampleRate      (0),
+m_format          (0),
+m_loop            (false),
+m_samplesProcessed(0),
+m_stretcher          (0),
+m_pitch              (1.0),
+m_stretchFloatBuffers(0),
+m_stretchIntBuffer   (0),
+m_stretchBufferSize  (0)
 {
 
 }
@@ -82,8 +87,15 @@ void SoundStream::initialize(unsigned int channelCount, unsigned int sampleRate)
 		return;
     }
 
-	m_stretcher = new RubberBand::RubberBandStretcher(sampleRate, channelCount);
+	delete m_stretcher;
+	m_stretcher = new RubberBand::RubberBandStretcher(sampleRate, channelCount, stretcherOptions);
 	m_stretcher->setPitchScale(m_pitch);
+
+	m_stretchFloatBuffers = new float *[channelCount];
+	for (int i = 0; i < channelCount; i++)
+		m_stretchFloatBuffers[i] = 0;
+
+	m_stretchIntBuffer = 0;
 }
 
 
@@ -302,9 +314,9 @@ bool SoundStream::fillAndPushBuffer(unsigned int bufferNum)
 
     // Acquire audio data
     Chunk data = {NULL, 0};
-	final = onGetData(data);
+	final = !onGetData(data);
 
-    if (!final)
+    if (final)
     {
         // Mark the buffer as the last one (so that we know when to reset the playing position)
         m_endBuffers[bufferNum] = true;
@@ -331,34 +343,45 @@ bool SoundStream::fillAndPushBuffer(unsigned int bufferNum)
 	// Need stretching if pitch isn't normal
 	if (m_pitch != 1.0 && data.samples && data.sampleCount)
 	{
+		// Channel count
+		unsigned int cs = m_channelCount;
+		// Samples per channel
+		unsigned int spc = data.sampleCount / cs;
+
 		// Allocate bigger buffers if too small
-		if (data.sampleCount > m_stretchBufferSize)
+		if (spc > m_stretchBufferSize)
 		{
-			delete m_stretchFloatBuffer;
+			for (int i = 0; i < cs; i++)
+			{
+				delete m_stretchFloatBuffers[i];
+				m_stretchFloatBuffers[i] = new float[spc];
+			}
+
 			delete m_stretchIntBuffer;
+			m_stretchIntBuffer = new Int16[spc*cs];
 
-			m_stretchFloatBuffer = new float[data.sampleCount];
-			m_stretchIntBuffer = new Int16[data.sampleCount];
-
-			m_stretchBufferSize = data.sampleCount;
+			m_stretchBufferSize = spc;
 		}
 
 		// Convert int16 -> float
-		for (int i = 0; i < data.sampleCount; i++)
-			m_stretchFloatBuffer[i] = data.samples[i];
+		for (int c = 0; c < cs; c++)
+			for (int s = 0; s < spc; s++)
+				m_stretchFloatBuffers[c][s] = data.samples[s * cs + c];
 
-		float **buffer = &m_stretchFloatBuffer;
+		size_t processedSamples;
 
 		// Stretch samples
-		m_stretcher->process(buffer, m_stretchBufferSize, final);
-		m_stretcher->retrieve(buffer, m_stretchBufferSize);
+		m_stretcher->process(m_stretchFloatBuffers, m_stretchBufferSize, final && !getLoop());
+		processedSamples = m_stretcher->retrieve(m_stretchFloatBuffers, m_stretchBufferSize);
 
 		// Convert float -> int16
-		for (int i = 0; i < data.sampleCount; i++)
-			m_stretchIntBuffer[i] = (*buffer)[i];
+		for (int c = 0; c < cs; c++)
+			for (int s = 0; s < processedSamples; s++)
+				m_stretchIntBuffer[s * cs + c] = m_stretchFloatBuffers[c][s];
 
 		// Set new sample data
 		data.samples = m_stretchIntBuffer;
+		data.sampleCount = processedSamples * cs;
 	}
 
     // Fill the buffer if some data was returned
@@ -406,7 +429,9 @@ void SoundStream::clearQueue()
         alCheck(alSourceUnqueueBuffers(m_source, 1, &buffer));
 
 	m_stretcher->reset();
-	delete m_stretchFloatBuffer;
+	for (int i = 0; i < m_channelCount; i++)
+		delete m_stretchFloatBuffers[i];
+	delete m_stretchFloatBuffers;
 	delete m_stretchIntBuffer;
 	m_stretchBufferSize = 0;
 }

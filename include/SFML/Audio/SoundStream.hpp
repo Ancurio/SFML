@@ -297,7 +297,7 @@ private :
 
 	RubberBand::RubberBandStretcher* m_stretcher;
 	float                            m_pitch;
-	float*                           m_stretchFloatBuffer;
+	float**                          m_stretchFloatBuffers;
 	Int16*                           m_stretchIntBuffer;
 	std::size_t                      m_stretchBufferSize;
 };
